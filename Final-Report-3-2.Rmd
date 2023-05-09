@@ -1,0 +1,656 @@
+---
+title: "Analysis of Weather Interactions with Corn Grain to Determine Crop Moisture at Harvest Time to Optimize Harvest Management "
+subtitle: "CPSC 499 - Group 5"
+author:
+- Tsz Yau Iris Chow tyc4@illinois.edu,
+- Maria Florencia Bianco bianco3@illinois.edu,
+- Kayla Lynne Noble klnoble2@illinois.edu
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+  word_document:
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{wrapfig}
+  - \usepackage{float}
+  - \usepackage{colortbl}
+  - \usepackage{pdflscape}
+  - \usepackage{tabu}
+  - \usepackage{threeparttable}
+  - \usepackage{placeins}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = 'center', out.width = "70%", echo = TRUE)
+```
+
+```{r data, include = FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(corrplot)
+library(caret)
+library(nlraa)
+library(tidyverse)
+library(randomForest)
+library(skimr)  # neat alternative to glance + summary
+library(rpart.plot)  # for better formatted plots than the ones in rpart
+library(kableExtra)
+library(magrittr)
+library(scales) # to use alpha function in pairs
+library(MASS)
+
+data <- read.csv("New_data_2nd_check.csv")
+table <- read.csv("table_data.csv")
+data_1st_check <- read.csv("All_data_B73.csv")
+data_1st_check[,11] <-as.numeric(data_1st_check[,11])
+data_1st_check[,12] <-as.numeric(data_1st_check[,12])
+data_1st_check[,13] <-as.numeric(data_1st_check[,13])
+data_1st_check[,14] <-as.numeric(data_1st_check[,14])
+data_1st_check[,15] <-as.numeric(data_1st_check[,15])
+data_1st_check <- data_1st_check[complete.cases(data_1st_check$Moisture_),]
+
+new.df <- data[,-c(1,2,7,9)]
+
+set.seed(12345)
+partition <- createDataPartition(y = new.df$Moisture_,
+                                 p = 0.8,
+                                 list = FALSE)
+
+
+training_data <- new.df[partition, ]
+testing_data <- new.df[-partition, ]
+
+moisture_glm <- train(Moisture_ ~ GDD_acum + Days_until_harvest,
+                      training_data, method = "glm", na.action = "na.omit",
+                      trControl = trainControl(method = "cv", number = 10, verboseIter = TRUE))
+
+moisture_glm2 <- train(Moisture_ ~ GDD_acum + Avg_RH2M_2w,
+                      training_data, method = "glm", na.action = "na.omit",
+                      trControl = trainControl(method = "cv", number = 10, verboseIter = TRUE))
+
+full_tree <- rpart(formula =  Moisture_ ~ .,
+                   data = training_data,
+                   method = "anova",  # classification (not regression)
+                   xval = 10  # 10-fold cross-validation
+)
+
+tree <- prune(full_tree,  cp = 0.19)
+
+```
+
+# Analysis of weather interactions with corn grain to determine crop moisture at harvest time to optimize harvest management
+
+## Abstract
+
+Decades of research have gone into trying to understand how corn grows and what management practices are best to achieve high yields. When it comes to management practices, one potential success factor for getting higher yield is grain moisture at harvest. Corn reaches physiological maturity when grain moisture is around 30%. Depending on the use of the grain, producers typically harvest corn with a moisture value anywhere between 15-25%. This project investigates the potential of creating a model based on in-season weather data to try and predict moisture content and optimum harvest time. The moisture content of corn varies with climatic conditions, which is why we believe the ideal harvest time could be predicted based on variables such as growing degree days, air temperature, humidity, soil moisture, wind, and precipitation.
+
+## Introduction
+
+Corn is one of the world's most important crops. It is used to produce thousands of goods and materials including foods, fuels, fibers, and pharmaceuticals. Each year, the world allocates around half a million acres to growing corn with the United States being the largest producer, consumer, and exporter of the crop (usda.gov). With populations on the rise, the demands for corn are also rising, but the number of acres used to produce corn has relatively stayed the same. Therefore, in order to meet these demands, we need to do everything we can to sustainably and economically maximize yields.
+
+The rate at which corn dries down after physiological maturity varies based on multiple factors. Weather, hybrid, planting date, and ear characteristics can all affect how fast corn dries down after it reaches maturity (crops.extension.iastate.edu). Three out of four of those factors can give a good estimate of when the crop will reach maturity, but the weather throughout the growing season can alter the predictions of the other three factors. A lot of growers will take grain samples from a field and run them through a moisture meter to see how dry the corn is as harvest is approaching. On average, corn will typically dry down 0.4-0.8% per day, however, that's just an average. Dry down rates have been seen as low as 0.3% per day during wet and cool weather to as high as 1.0% per day during hot dry weather (crops.extension.iastate.edu). Throughout a lot of the corn belt, day-to-day weather and day-to-night temperature differences during late summer and fall can fluctuate greatly, so while a grower may know the maturity rate of a hybrid, the time during which corn dries down can have a major impact on how accurate that day count may be.
+
+Some issues that can arise from not having an accurate prediction on moisture content and harvest date can be that a grower may move all of his equipment to a field only to harvest a couple of passes before noticing that the corn was wetter than he thought because he took his samples too close to the field edge. On the contrary, a grower could end up waiting until the corn is too dry ($\leq$ 15%) resulting in significant stalk lodging and yield loss (extension.sdstate.edu).
+
+The decision of what moisture percentage a grower wants to harvest their crop at is made by asking multiple questions: What is the grain being used for? How much am I willing to spend on drying the grain myself? How much am I willing to spend taking high-moisture grain to the elevator? A grower could use grain from one field as silage in which they would want to harvest it at higher moisture, and a different field as grain to take to the elevator in which they would want the moisture to be lower in order to not have to pay the elevator to dry it. These questions and situations lead to an intriguing question: Could we use in-season weather data as an indicator to predict harvest dates for a given relative maturity?
+
+It would be beneficial to be able to predict harvest dates so you can better plan your harvest sequence in a way that will help preserve grain quality across your farm. The moisture content during dry down in corn varies with in-season weather, and we believe the ideal harvest date could be predicted on indicators such as temperature, humidity, soil moisture, wind, and precipitation. A model that predicts grain moisture content for harvest timing could help growers prevent loss of time, money, grain quality, and yield.
+
+## Materials and Methods
+
+### Data composition
+
+The Genomes to Fields (G2F) dataset contains information about 4,683 hybrids in 217 environments (field locations) for the years 2014 to 2021, with date planted and harvested, grain moisture at harvest (%), and daily weather data for every environment and every year considered. The daily weather data for each environment includes 16 variables, obtained from the NASA Power website (<https://power.larc.nasa.gov/>) for the locations and years in the dataset. For this project, we are working with all the locations and years of the B73/PHN82 hybrid. This hybrid was planted in 45 locations between the years 2014 and 2021. We chose 5 variables to act as predictors for our analysis in the first part of the project: Average Relative Humidity (during all the planting season), Average Wind Speed, Accumulated Precipitation (1 week before harvest, 1 month before harvest, and all the growing season), Accumulated Growing Degree Days, and Profile Soil Moisture. More variables from the weather dataset were analyzed but only a few were considered for this document. Including all of the variables would have added complexity to the analysis, however, better results were not apparent (in the linear model fit). Later, we included all variables to fit non parametric models, the list of predictors considered for this second part is discussed later in this section.
+
+Growing Degree Days (GDD) is a measurement of heat accumulation used to predict the growth and development of crops during the growing season, which can be useful in predicting moisture content at harvest time. Corn requires a certain number of GDD to reach maturity, which is largely dependent on the hybrid and the relative maturity of the hybrid. A common approach is to use a base temperature of 50 F (10 °C). We used the following formula to calculate it: $$
+GDD = \frac{T_{max} + T_{min}} {2} - T_{base}
+$$ Where T~max~ is the maximum daily temperature, T~min~ is the minimum daily temperature, and T~base~ is the base temperature (10 °C). If the calculated GDD is less than zero, it is set to zero.
+
+The GDD concept is based on the idea that plants need a certain amount of heat to grow and develop. The calculation of GDD involves tracking the daily temperatures and calculating the accumulated heat units. Then, we calculated the cumulative value for all growing seasons (from planting date to harvest date).
+
+### Correlation analysis
+
+To explore the relationship between variables, correlation analysis was taken using the corr() function in R. To visualize the results, we plotted the correlation relationships between variables using a correlation matrix. Input variables include growing degree day, relative humidity, wind speed, precipitation, and profile soil moisture. In the correlation matrix, numbers with darker colors indicate stronger correlations within variables. Blue indicates a positive correlation and red indicates a negative correlation. Pearson Correlation coefficient that is between -1 to +1 is displayed in boxes to denote the correlation with variables.
+
+### Linear Model Development
+
+The dataset was fit to linear models, focusing on relationships between grain moisture content at harvest time (Moisture) and the variables that presented higher absolute values in the correlation analysis. First, only one predictor was considered (GDD_acum), and then, more predictors were added, gradually increasing the model complexity. A summary of each model was called to evaluate the significance of each added predictor in contributing to the explanation of the variability of the response variable (Moisture). Model results of observed versus predicted values were plotted, and a-b lines were overlaid to determine how well the model followed a linear relationship. The AIC metric was used to compare the different models with more complexity. A lower AIC value indicates the model is better at predicting the results of our response variable. But adding more complexity (one more predictor) is only considered worthwhile if the difference between the AIC values of the two models is greater than 5.
+
+### Non-linear model and Non-parametric models Development
+
+Since the linear models tried in our first draft didn't perform quite as intended, for the second part of the project, we are going to try different approaches. First, we will try to fit a non-linear model since we saw that the Growing Degree Days had a strong correlation and what looked to be a non-linear relationship with the Grain Moisture content. We will also try a few machine-learning methods to see if predictions of Grain Moisture content with weather data can be improved. This time, we used all the variables contained in the weather data set as predictors using 2 values for each variable: the average for the week before harvest, and the average of the week 2 weeks before the harvest (except for ground moisture information, which we used the actual data for the day of harvest). The predictors considered are shown in the table below.
+```{r table, echo=FALSE}
+kable(table[-c(22,23),], align = "lcl", col.names = c("Predictor", "Units", "Description"),
+      caption = "List of Predictors", format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = "hold_position") %>%
+  add_footnote(c("PAR = Photosynthetically Active Radiation", "wbh stands for \"week before harvest\""),
+               notation = "alphabet")
+```
+
+\FloatBarrier
+
+### Decision Tree and Random Forest Analysis
+
+We developed a Decision Tree analysis and a Random Forest analysis with all of these predictors. A Decision Tree is a non-parametric model that has the advantage of being intuitive and easy to explain. Since these trees generally don't have the same level of predictive accuracy as other approaches, we also used a Random Forest model which is composed of multiple Decision Trees. These non-parametric models are more flexible and realistic and we expect to get better predictive performance.
+
+## Results and Discussion
+
+### Structural Exploration of Variables
+
+To perform exploratory analysis, all the potential predictors were plotted against the response variable using ggplot package in R in order to visualize the type of relationship between them and determine if a linear relationship could exist.
+
+First, in Figure 1, Growing Degree Days (GDD) vs Grain Moisture were plotted and there looks to be a strong relationship. This relationship could be linear, but there seems to be a curvature that would imply a non-linear model would be a better fit. From the following graph, we can see that grain moisture content at harvest time (in %) decreases when the accumulated GDD increases.
+
+```{r plot-relation_with_GDD, echo = FALSE, fig.cap= "Relationship between GDD and Moisture"}
+ggplot(data, aes(x = GDD_acum, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+   # title = "Relationship between Growing Degree Days and Grain Moisture",
+    x = "Accumulated Growing Degree Days (GDD_acum)",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+Figure 2 shows the relationship between the average Relative Humidity (%) for the growing season and the Grain Moisture content at harvest (%). Same as before, a linear relationship seems to exist between both variables, but not as strong as the one with GDD. It also appears to have a small curvature that would indicate a non-linear relationship.
+
+```{r plot-relation_with_RH, echo = FALSE, fig.cap= "Relationship between Relative Humidity and Grain Moisture"}
+ggplot(data, aes(x = Avg_RH2M_1w, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+  #  title = "Figure 2. Relationship between Relative Humidity and Grain Moisture",
+    x = "Relative humidity (average)",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+In Figure 3 and Figure 4, the plots for average Wind speed at 2 meters (m/s) for the growing season and the Profile Soil Moisture at harvest time (shown below) do not seem to have any apparent relationship with Grain Moisture (%). There appears to be no linear relationship or no relationship at all between these predictors and the response variable.
+
+```{r plot-relation_with_WS, echo = FALSE, fig.cap="Relationship between Wind Speed and Grain Moisture"}
+ggplot(data, aes(x = Avg_WS_1w, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+   # title = "Figure 3. Relationship between Wind Speed and Grain Moisture",
+    x = "Wind Speed (average)",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+```{r plot-relation_with_Soil-Moisture, echo = FALSE, fig.cap="Relationship between Soil Moisture and Grain Moisture"}
+ggplot(data, aes(x = GWETPROF, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+    #title = "Figure 4. Relationship between Soil Moisture and Grain Moisture",
+    x = "Profile Soil Moisture",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+The precipitation variable was analyzed in 3 different values: the average of one week before harvest (Figure 5), the average of one month before harvest (Figure 6), and the average of the whole season (Figure 7). There does not seem to be an apparent relationship between each value and grain moisture.
+
+```{r plot-relation_with_Rain_1w, echo = FALSE, fig.cap="Relationship between Accumulated Precipitation 1 week before harvest and Grain Moisture"}
+ggplot(data, aes(x = Acum_Prec_1w, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+    #title = "Figure 5. Relationship between Accumulated Precipitation 1 week 
+    #before harvest and Grain Moisture",
+    x = "Accumulated Precipitation - 1 week [mm]",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+```{r plot-relation_with_Rain_1m, echo = FALSE, fig.cap="Relationship between Accumulated Precipitation 1 month before harvest and Grain Moisture"}
+ggplot(data, aes(x = Acum_Prec_1m, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+    #title = "Figure 6. Relationship between Accumulated Precipitation 1 month 
+    #before harvest and Grain Moisture",
+    x = "Accumulated Precipitation - 1 month [mm]",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+```{r plot-relation_with_Rain_all, echo = FALSE, warning = FALSE, fig.cap="Relationship between Accumulated Precipitation in all growing season and Grain Moisture"}
+ggplot(data_1st_check, aes(x = Acum_Prec_all, y = Moisture_, color = Year)) + 
+  geom_point() +
+  labs(
+    #title = "Figure 7. Relationship between Accumulated Precipitation 
+    #in all growing season and Grain Moisture",
+    x = "Accumulated Precipitation - All Season [mm]",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+```
+\FloatBarrier
+All of the variables were plotted against each other using the pairs() function in R. Figure 8 shows the relationship between all variables. We already know the relationship between the predictors and the response variable (Moisture), which is represented in the last row of the plot. Two predictors that are closely related may not add new information that explains our model, therefore, we should choose only one of them for the analysis (the same can be observed in the correlation matrix). This graph does not show any strong and clear relationship among the predictors. The names of the predictors in the graph are shortened and the meaning is explained as follows: GWETPROF is the Profile soil moisture at the time of harvest, GDD_acum is the accumulated GDD, Acum_Prec_1w is the accumulated precipitation for 1 week before harvest, Acum_Prec_1m is the accumulated precipitation for 1 month before harvest, Acum_Prec_all is the accumulated precipitation for all growing season, Avg_WS_all is the average Wind Speed for all the growing season, Avg_RH_all is the average Relative Humidity in the growing season.
+
+```{r Pairs-function-all, echo = FALSE, fig.cap="Relationship between all variables"}
+new.df2 <- data_1st_check[,-c(1,2,3,4,7,8,9,10)]
+pairs(new.df2,
+      upper.panel = NULL,
+      panel = function(x, y, ...){
+        points(x, y, col = alpha("#0099FF",0.3), pch=19, cex = 0.8)
+      }
+)
+```
+\FloatBarrier
+### Correlation Analysis
+
+The correlation shows how strong the relationship is between two variables. As discussed before, we want to find the best predictor candidates to build our model. The correlation matrix for the chosen variables is shown in Table 2.
+```{r Correlation-table, echo = FALSE, out.width="70%"}
+cor.table <- round(cor(new.df2, use = "complete.obs"),2)
+kable(cor.table,
+      caption = "Correlation Table",
+      format = "latex", booktabs = T) %>%
+  kable_styling(latex_options = "scale_down")
+```
+\FloatBarrier
+The Correlation Matrix visualizes the relationship between variables. The numbers at the intersection of two variables are the Pearson correlation coefficient of each pair of variables. The color of the number represents the relationship between variables. Darker colors represent stronger correlations.
+
+```{r Correlation-matrix, echo=FALSE, fig.cap= "Correlation Matrix"}
+corrplot(cor.table, order = "AOE" , type= "full", method = "number", 
+         #main = "Figure 9. Correlation Matrix",
+         font.main = 2, # bold
+         cex.main = 1,
+        # mar = c(0,0,1,0), # No idea, but it is to make the title appear complete
+         tl.cex = 0.8, # decrease the font size of the variables names
+         tl.srt = 45) # rotation in degrees of the names  
+```
+\FloatBarrier
+As shown in Figure 9, not many variables have a strong correlation with Moisture except for accumulated Growing Degree Days. Relative humidity has a moderate correlation relationship with the Accumulated Precipitation - All season and the Growing Degree Days variable. Moreover, Accumulated Precipitation - All season and Accumulated Precipitation - 1 month have a mild correlation with each other. Surprisingly, only one variable (GDD) shows a strong correlation relationship with Moisture content.
+
+### Linear Model Development
+
+We used lm() function in R to plot linear models. The following figure shows the summary of the fitted model using accumulated GDD as the only predictor since it had the strongest correlation to Grain Moisture.
+
+<center>**Linear model fit with GDD**</center>
+
+```{r linear-model-GDD, echo = FALSE}
+fit <- lm (data$Moisture_ ~ data$GDD_acum)
+summary(fit)
+```
+\FloatBarrier
+From the residuals, we can see that the median is close to zero, which is ideal. From the Coefficient section, we see that the Pr values (probability of those coefficients being equal to zero) are very small, thus we can reject the null hypothesis that the coefficients are equal to zero. This means that the accumulated GDD does have an effect on the moisture content we want to predict. The R^2^ value that tells us how much variation was explained by the model was `r sprintf("%.2f%%", summary(fit)$r.squared * 100)`, which is not ideal as it explains only half of the total variation.
+
+We tried adding more predictors (as shown in the next code and results) to see if we can explain more of the total variation with this second model fit. The following table shows the summary of the linear model that considers not only accumulated GDD as a predictor but also the average Relative Humidity (since it was the variable with the second-highest correlation with moisture).
+
+<center>**Linear model fit with GDD and Relative Humidity**</center>
+
+```{r linear-model-GDD-RH, echo = FALSE}
+fit2 <- lm (data$Moisture_ ~ data$GDD_acum + data$Avg_RH2M_1w)
+summary(fit2)
+```
+\FloatBarrier
+In this case, we can see that the median of the residuals is very similar than the one we had before. We can also see that the Pr value for the coefficients of the average Relative Humidity is higher than .05, which means that this predictor is not significant. The R^2^ value is slightly higher than before (`r sprintf("%.2f%%", summary(fit2)$r.squared * 100)`), but it is not high enough to justify adding more complexity to the model.
+
+For the last fit (code shown below), we tried adding soil moisture as the third predictor.
+
+<center>**Linear model fit with GDD, Relative Humidity and Soil Moisture**</center>
+
+```{r linear-model-GDD-RH-Soil, echo = FALSE}
+fit3 <- lm (data$Moisture_ ~ data$GDD_acum + data$Avg_RH2M_1w + data$GWETPROF)
+summary(fit3)
+```
+\FloatBarrier
+In this case, the median of the residuals is still very similar than before, indicating the model with three predictors is just as accurate as the model with two predictors. Furthermore, the Pr value for the new predictor is very high and it is not significant at all. Finally, the R^2^ value is a bit higher than the one for the previous fit (`r sprintf("%.2f%%", summary(fit3)$r.squared * 100)`), but still not increasing enough to make it better. In every model, we can't explain more than half of the total variability.
+
+Since R^2^ is not a good metric when we are comparing models with different levels of complexity, we calculated the AIC values for the 3 model fits discussed before. AIC is founded on information theory and it is a better metric for model selection when it comes to models that have different levels of complexity. AIC deals with the trade-off between how good the fit of the model is and its simplicity. The lowest AIC is the best model fit. We can see below what we assumed from the summaries obtained before: the first model, the one with only one predictor (accumulated GDD), is the best one.
+
+**AIC metric - Linear models**
+
+```{r AIC-metrics}
+AIC(fit)
+AIC(fit2)
+AIC(fit3)
+```
+\FloatBarrier
+The predicted vs observed values can be seen in the next Figure. Predictions from the first fitted model were used. As observed before, this model fit is doing a good job of predicting and the ab-line describes the trend of the model well, but other models could be explored to see if they are a better fit than the linear model.
+
+```{r predicted-vs-observed-linear, echo = FALSE, fig.cap = "Predictions of Grain Moisture - Linear model"}
+pred <-predict(fit)
+obs <- data$Moisture_ # Observed values
+
+plot(obs, pred, xlab = "Observed values", ylab = "Predicted by linear model", 
+     #main = "Figure 14. Predictions of Grain Moisture - Linear model"
+)
+abline(a=0, b=1, col=2, lwd = 2)
+
+```
+\FloatBarrier
+### Non-Linear Model
+
+For the non-linear model, we tried using a non-linear relationship between moisture and accumulated Growing Degree Days with the form: $$
+Yo * GDD_{acum} ^ {-k}
+$$ where Yo and k are parameters. The next figure shows the non-linear relationship. Following the graph, you will see the code used to fit this model and the metric to evaluate it and compare it with the linear model presented before.
+
+```{r plot-nlm, echo = FALSE, fig.cap = "Non-Linear Relationship between GDD and Moisture"}
+plot <- ggplot(data, aes(x = GDD_acum, y = Moisture_)) +
+  geom_point(color = "#0099FF") + 
+  labs(
+    #title = "Figure 15. Non-Linear Relationship between GDD and Moisture",
+    x = "Growing Degree Days",
+    y = "Grain Moisture content [%]"
+  ) + 
+  theme_bw()+
+  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"))
+
+equation <- function(x) 162100*x^(-1.217)
+plot + stat_function(fun = equation, color = "#0099FF" ,
+                     linetype= "dashed")
+```
+\FloatBarrier
+```{r Non-linear-model}
+# Non-linear model with GDD
+nlm <- nls(Moisture_ ~ (Yo*GDD_acum^(-k)),
+                    data=data,
+                    start=list(Yo=118000, k=1.176)
+)
+
+AIC(nlm)
+#summary of nlm
+summary(nlm)
+```
+\FloatBarrier
+The AIC for this model gave a value of 1093, better than the one calculated for the linear model presented before (1119). If we only had these two options, we would choose the non-linear model, since it performs better.
+
+The predicted values calculated with this non-linear model versus the observed ones (Moisture content) are plotted below. We can see that the model seems to perform better for lower values of moisture content and worse for values higher than 30%.
+
+```{r predicted-vs-observed-Non-linear, echo = FALSE, fig.cap = "Predictions of Grain Moisture - Non-linear Model"}
+pred_nl <-predict(nlm)
+obs <- data$Moisture_ # Observed values
+
+plot(obs, pred_nl, xlab = "Observed values", ylab = "Predicted by Non-linear model", 
+     #main = "Figure 16. Predictions of Grain Moisture - Non-linear model"
+)
+abline(a=0, b=1, col=2, lwd = 2)
+
+```
+\FloatBarrier
+
+
+### Decision Trees
+
+To create the Decision Tree, the caret package in R was used, we set a seed first (since we are working with random models and we want to be able to reproduce our results). Then, we created a data partition with 80% of our target variable values (our target variable being grain moisture content [%]). After that, we divided our data frame into 2 partitions: the training set and the testing set, the training set with 80% of our original data, and the testing set with the rest. This is done to be able to train the model with the first set and test it on new data to avoid overfitting. We built the model with the rpart() function in R for our target variable against all our predictors and we chose the ANOVA method with a 10-fold cross-validation. We could then plot the resulting tree. The code and tree are shown below.
+
+```{r Decision-Tree-Full, eval = FALSE}
+set.seed(12345)
+partition <- createDataPartition(y = data$Moisture_,
+                                 p = 0.8,
+                                 list = FALSE)
+
+training_data <- data[partition, ]
+testing_data <- data[-partition, ]
+
+# Build the model
+full_tree <- rpart(formula =  Moisture_ ~ .,
+                   data = training_data,
+                   method = "anova",  # classification (not regression)
+                   xval = 10  # 10-fold cross-validation
+)
+```
+\FloatBarrier
+```{r Decision-Tree-Full-plot,  out.width="100%", fig.cap = "Decision Tree - Full"}
+#A model with a continuous response (an anova model).
+#Each node shows
+#- the predicted value,
+#- the percentage of observations in the node.
+rpart.plot(full_tree, yesno = TRUE,
+           #main = "Figure 17. Decision Tree - Full"
+)
+```
+\FloatBarrier
+The Decision Tree shows that the Growing Degree Days (GDD) is still the most important predictor to determine the moisture content of the grain at harvest time. According to this tree:  
+
+- If the accumulated GDD is greater or equal to 2001, the grain moisture content will be between 12 and 15%. It will be 12% if the PAR two weeks before harvest is greater than 122 W/m^2^, and 15% if PAR is less than that number.  
+- If the accumulated GDD is greater than 1677 but less than 2001, then the moisture content of the grain is likely to be around 16 to 19%. It will be close to 16% if the accumulated precipitation the week before harvest is less than 14 mm, and 19% if it is more.  
+- If the accumulated GDD is between 1441 and 1677, and the PAR 2 weeks before harvest is less than 57 W/m^2^, the moisture content is going to be close to 19%; but if the PAR is greater than 57, the moisture content of the grain is going to be 22% instead.  
+- If the accumulated GDD is between 1299 and 1441, and the average PAR the 2nd week before harvest is less than 50 W/m^2^, the grain moisture will be 23%; but with PAR above 50, the grain will be at 30% moisture content.  
+- Finally, if the accumulated GDD is less than 1299 around the time of harvest, the moisture content will be around 33%.
+
+This makes sense as GDD is a measure of air temperature during the day, so the larger number would imply exposure to higher temperatures, and therefore the grain would have less moisture. The PAR irradiation considered will dry out the grain more with higher values, which is not reflected like this in some branches of the tree. The opposite happens with precipitation; a greater amount of accumulated precipitation will imply greater moisture.
+
+Larger trees provide a good fit to the training data, but they will likely overfit so we tried pruning the tree (removing some branches). To do so, we plotted the complexity parameter (cp) against the relative error and size of the tree:
+
+```{r cp-Decision-Tree, echo = FALSE, fig.cap= "Complexity with size of Tree"}
+#par(mar = c(5,4,4,4)+ 2) # Increase bottom margin by 2 inches
+plotcp(full_tree)
+#mtext("Figure 18. Complexity with size of Tree", 
+#      side=3, # 3 is to put the title in the upper side of the graph
+#      line=4.5, # to move the title from the line 
+#      cex=1.2, # To increase the font size, 1 is the default
+#      font = 2) # 2 is bold
+```
+\FloatBarrier
+It seems that a value of cp = 0.19 is the one that minimizes the error with a smaller tree than the one before, but it will give us very little information since it will only contain 2 branches. Pruning with this cp value, we get the following tree:
+
+```{r Prune-Tree, echo = FALSE, fig.cap="Decision Tree - Pruned to min error"}
+tree <- prune(full_tree,  cp = 0.19)
+rpart.plot(tree, yesno = TRUE,
+           #main = "Figure 19. Decision Tree - Pruned to min cp"
+)
+```
+\FloatBarrier
+This tree is indeed simpler than the one before but only uses the accumulated GDD as the predictor. The following table shows the different metrics used to evaluate each tree's performance (the first column corresponds to the full tree and the second to the pruned tree):
+
+**Metrics to compare Full and Pruned Trees**
+
+```{r Pruned, echo = FALSE}
+testing_data$predicted_full <- predict(full_tree, testing_data, type="vector")
+testing_data$predicted_pruned <- predict(tree, testing_data, type="vector")
+
+df <- data.frame(cbind(Full= hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_full),
+      Pruned = hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_pruned)))
+colnames(df) <- c("Full", "Pruned")
+df
+```
+\FloatBarrier
+From the table above, we can see that RMSE and R^2^ are better for the full tree than the pruned one.
+
+If we tried to include more branches to the tree, we would see that these metrics improve and get closer to the ones for the full tree. For example, we can analyze pruning with a cp value of 0.03, which would give us the following tree:
+
+```{r Prune-Tree-2, echo = FALSE, fig.cap = "Decision Tree - Pruned to cp = 0.03"}
+# We can use fig.cap = "" between the {} to put the names of figures instead of putting them as titles of the graphs
+tree <- prune(full_tree,  cp = 0.03)
+rpart.plot(tree, yesno = TRUE,
+           #main = "Figure 20. Decision Tree - Pruned to cp = 0.03"
+)
+```
+\FloatBarrier
+With this tree, it seems we would have better predictions since we are including a new predictor to the model. When we analyze the performance metrics (shown below), we can see that the R^2^ improved comparing to the R^2^ of the pruned tree that has only 2 branches instead of 5, and the RSME is lower (closer to the numbers for the full tree), which means this model performs better with a little more complexity. But it also shows that it performs similar to the full tree, so there is no need to add more branches to obtain similar results, and we would avoid the problem of overfitting.
+
+**Metrics to compare Full and Pruned Trees**
+
+```{r Pruned-2, echo = FALSE}
+testing_data$predicted_full <- predict(full_tree, testing_data, type="vector")
+testing_data$predicted_pruned <- predict(tree, testing_data, type="vector")
+
+df <- data.frame(cbind(Full= hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_full),
+      Pruned = hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_pruned)))
+colnames(df) <- c("Full", "Pruned")
+df
+```
+\FloatBarrier
+### Random Forest
+
+Random Forests are composed of multiple Decision Trees, making them part of a family of meta-models -- composed of other models working in tandem -- called ensemble learning models. We fitted a random forest using all the variables in the dataset to predict moisture. The optimum number of decision trees is 50, as it can be seen in the plot below. From the trees vs error graph, the error peaks when the number of trees is less than 50 and remains constant when the number of trees is greater than 50. The RMSE of the random forest is not significantly different from a single decision tree. The variance explained by the random forest is around 50 - 55%.
+
+```{r Random-Forest, echo = FALSE, fig.cap="Random Forest Model", out.width="100%"}
+m1 <- randomForest(
+  formula = Moisture_ ~ .,  
+  data    = training_data,  
+  ntree = 300, #Number of trees to grow.   
+  mtry = 15, #Number of variables randomly sampled as candidates at each split.  
+  nodesize	=5#  Minimum size of terminal nodes.  
+)
+
+m1$call
+print(m1)
+
+
+testing_data$RFPred <- predict(m1, testing_data)
+par(mfrow=c(1,2))
+plot(testing_data$Moisture_, testing_data$RFPred, pch=16)
+plot(m1, main = "RF")
+```
+\FloatBarrier
+The following table shows the different metrics to compare the Full Tree developed in the previous section, the Pruned Tree and the Random Forest.
+
+```{r RF-metrics, echo = FALSE}
+hydroGOF::gof(testing_data$Moisture_, testing_data$RFPred)[4,1]
+
+df <- data.frame(cbind(Full= hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_full),
+      Pruned = hydroGOF::gof(testing_data$Moisture_, testing_data$predicted_pruned), 
+      RF = hydroGOF::gof(testing_data$Moisture_, testing_data$RFPred)))
+colnames(df) <- c("Full", "Pruned", "RF")
+df
+```
+\FloatBarrier
+We can see that the RMSE from the Random Forest (`r hydroGOF::gof(testing_data$Moisture_, testing_data$RFPred)[4,1]`) is a little better than the RMSE from the pruned tree (3.96), but slightly worse than the RMSE from the full tree (3.89). Here we would have to determine if we want to prioritize the simplicity to communicate the model (of the decision tree) or the capacity to avoid overfitting (and better results) of the Random Forest.
+
+
+### GLM model
+
+We fitted a generalized linear model (glm) to predict whether it is suitable to harvest. The method uses the logit function to estimate the probabilities of independent and dependent variables. To begin with, we made a new variable (p_ready). If Moisture is greater than 20%, the value of 20%, we assign the probability to be ready to harvest (p_ready) a value of 1. On the contrary, if Moisture is less than 20%, the value of p_ready will be 0 which means it is not ready for harvesting. We set the threshold at 20% because the optimum range for harvest is 15-25% moisture. 
+
+```{r GLM, echo = FALSE}
+# We set the probability of being ready to harvest
+new.df$p_ready <- ifelse(new.df$Moisture_ > 20, 1, 0) 
+                  # wil be equal to 1 if it's greater 
+                  # than treshold (20%) and 0 if it's not
+
+set.seed(12345)
+partition <- createDataPartition(y = new.df$Moisture_,
+                                 p = 0.8,
+                                 list = FALSE)
+
+training_data <- new.df[partition, ]
+testing_data <- new.df[-partition, ]
+
+glm <- glm(formula = p_ready ~ GDD_acum + Avg_RH2M_2w,
+           family = binomial(),
+           data = training_data)
+
+summary(glm)
+
+sqrt(mean(glm$residuals^2))
+
+```
+
+
+
+\FloatBarrier
+The output of the model is a probability value that predicts the likelihood of an event occurring, in this case, the grain being ready to harvest. This probability value is typically on the log-odds scale (also known as the logit scale), which ranges from negative infinity to positive infinity. To obtain the predicted probabilities on the original probability scale (i.e., between 0 and 1), we need to transform the predicted values back to the original scale. One way to do this is to use the plogis() function in R. This function transforms the log-odds scale probability values to the probability scale that we want. We used the training set (80% of the data) to train the model, and testing set (20% of the data) to predict new results and evaluate the model performance, same as before but now with a new variable we want to predict (p_ready). In the following graph we can see the predictions made by the model compared to the actual values in the testing set.
+
+```{r GLM-plot, echo = FALSE}
+pred_glm <- plogis(predict(glm, newdata = testing_data))
+
+plot(testing_data$p_ready, pred_glm,
+     main = "Predicted vs Actual - Test set",
+     xlab = "Actual",
+     ylab = "Predicted",
+     col = alpha("#0099FF",0.3), pch = 19)
+
+```
+\FloatBarrier
+To determine the performance of the model, we decided to assign a new threshold to the prediction results. We see from the graph that the best value for this threshold could be around 0.5. If the probability of being ready to harvest is greater than 0.5, we replace that prediction with 1, if it is not, then we assume the prediction is 0 (not ready), we assigned these results to a new variable (predicted_binary) and we created a Confusion Matrix to evaluate the results.
+
+```{r GLM-ConfMat, echo = FALSE}
+actual <- testing_data$p_ready
+predicted_binary <- ifelse(pred_glm >= 0.5, 1 , 0)
+
+conf_mat <- confusionMatrix(factor(predicted_binary), factor(actual), positive = "1")
+
+conf_mat$table
+conf_mat
+
+ggplot(data = as.data.frame(conf_mat$table), aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(x = "Predicted", y = "Actual", title = "Confusion Matrix")
+```
+This model has high results for the metrics evaluated in the confusion matrix. The RMSE calculated was around 5.11, which higher than all the other models, but the AIC value is around 126. Since we used a different approach for this model, and we are not predicting the same response variable, this model is not directly comparable with the others, and it is difficult to determine if it is better or not. It would be better to try the other models with a similar approach to compare them fairly. 
+\FloatBarrier
+
+### Ordinal logistic regression with levels of harvest
+```{r}
+
+new.df$level <- cut(new.df$Moisture_, 
+                    breaks = c(0, 20, 25,100), 
+                    labels = c("too dry", "optimum", "not ready"), 
+                    include.lowest = TRUE)
+
+
+set.seed(12345)
+partition <- createDataPartition(y = new.df$Moisture_,
+                                 p = 0.8,
+                                 list = FALSE)
+
+training_data <- new.df[partition, ]
+testing_data <- new.df[-partition, ]
+
+# Define the response variable
+response <- factor(training_data$level, levels = c("too dry", "optimum", "not ready"))
+
+# Fit the logistic model
+model <- polr(response ~ GDD_acum+Avg_RH2M_2w, data=training_data)
+
+summary(model)
+
+sqrt(mean(model$df.residual^2))
+
+
+
+```
+For comparison purpose, we tried to divide Moisture into 3 levels (too dry, optimum and not ready), as the optimum harvest moisture is 20-25%. We fit a ordinal logistic regression. However, it does not perform as well as the glm model when using their RMSE to compare.
+\FloatBarrier
+
+## Conclusions
+
+From all the models fitted in this work, we can conclude that linear models are not well suited, and random forest, despite its many advantages, does not improve the prediction results in a very significant way. However, it can still be applied to this case and gives good results. Decision trees can also be useful to communicate information and get first estimates of the target variable.
+
+Since our dataset only contained information on the grain moisture content at harvest time, our analysis was limited. We believe that having grain moisture measurements at different times during the harvest season would allow us to create better and more robust models with improved performance. It would be interesting to analyze if this information can be obtained by remote sensing since we know the location of the fields and the date the grain moisture was measured.
+
+For now, all of the models developed seem to rely mostly on accumulated GDD, therefore, that would be the variable to control in order to determine the optimum harvest date.
+
+## References
+
+NASA Power Project. (power.larc.nasa.gov/).
+
+The data was obtained from the National Aeronautics and Space Administration (NASA) Langley Research Center (LaRC) Prediction of Worldwide Energy Resource (POWER) Project funded through the NASA Earth Science/Applied Science Program.
+
+The data was obtained from the POWER Project's Hourly 2.0.0 version on 2023/03/01.
+
+Carlson, C.G., and Cheryl L. Reese. 2016 Chapter 35: Grain Marketing - Understanding Corn Moisture Content, Shrinkage, and Drying. In Clay, D.E, C.G. Carlson, S.A. Clay and E. Byamukama (eds). iGrow Corn: Best Management Practices. South Dakota State University.
+
+World Agricultural Production. March 2023. Circular Series. WAP 3-23. (fas.usda.gov).
+
+Elmore, Roger and Abendroth, Lori. September 2007. How Fast Can Corn Dry Down? Iowa State University Agronomy Extension Corn Production. (extension.iastate.edu).
+
+Maize GXE. Genomes to Fields Initiative. (www.maizegxeprediction2022.org)
+
+## Link to Rmd File
+
